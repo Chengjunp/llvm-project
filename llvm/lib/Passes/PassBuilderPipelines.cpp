@@ -2301,6 +2301,12 @@ AAManager PassBuilder::buildDefaultAAPipeline() {
   // The order in which these are registered determines their priority when
   // being queried.
 
+  // Add target-specific alias analyses. Running a target-specific AA early can
+  // improve compile time by leveraging target-specific knowledge to quickly
+  // determine some alias results, thereby reducing the workload for BasicAA.
+  if (TM)
+    TM->registerDefaultAliasAnalyses(AA);
+
   // First we register the basic alias analysis that provides the majority of
   // per-function local AA logic. This is a stateless, on-demand local set of
   // AA techniques.
@@ -2317,10 +2323,6 @@ AAManager PassBuilder::buildDefaultAAPipeline() {
   // results from `GlobalsAA` through a readonly proxy.
   if (EnableGlobalAnalyses)
     AA.registerModuleAnalysis<GlobalsAA>();
-
-  // Add target-specific alias analyses.
-  if (TM)
-    TM->registerDefaultAliasAnalyses(AA);
 
   return AA;
 }
