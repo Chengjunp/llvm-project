@@ -57,6 +57,14 @@ static bool addRangeAttr(uint64_t Low, uint64_t High, IntrinsicInst *II) {
   return true;
 }
 
+// Replace all uses of the intrinsic call with a constant value.
+static bool replaceWithConstant(uint64_t Val, IntrinsicInst *II, SmallVector<IntrinsicInst *, 8> &ToErase) {
+  Constant *C = ConstantInt::get(II->getType(), Val);
+  II->replaceAllUsesWith(C);
+  ToErase.push_back(II);
+  return true;
+}
+
 static bool runNVVMIntrRange(Function &F) {
   struct Vector3 {
     unsigned X, Y, Z;
@@ -66,7 +74,8 @@ static bool runNVVMIntrRange(Function &F) {
   if (!isKernelFunction(F))
     return false;
 
-  const auto OverallReqNTID = getOverallReqNTID(F);
+  const auto ReqNTID = getReqNTID(F);
+  const auto OverallReqNTID = getVectorProduct(ReqNTID);
   const auto OverallMaxNTID = getOverallMaxNTID(F);
   const auto OverallClusterRank = getOverallClusterRank(F);
 
@@ -90,23 +99,44 @@ static bool runNVVMIntrRange(Function &F) {
                                std::min(0xffffu, FunctionClusterRank),
                                std::min(0xffffu, FunctionClusterRank)};
 
-  const auto ProccessIntrinsic = [&](IntrinsicInst *II) -> bool {
+  // When reqntid is specified, ntid (blockDim) values are exact compile-time
+  // constants. Get per-dimension values for constant folding.
+  const Vector3 ReqBlockDim =
+      !ReqNTID.empty()
+          ? Vector3{ReqNTID[0], ReqNTID.size() > 1 ? ReqNTID[1] : 1,
+                    ReqNTID.size() > 2 ? ReqNTID[2] : 1}
+          : Vector3{};
+  // Only fold when reqntid values are within hardware limits.
+  const bool HasValidReqNTID =
+      (ReqBlockDim.X >= 1 && ReqBlockDim.X <= 1024) &&
+      (ReqBlockDim.Y >= 1 && ReqBlockDim.Y <= 1024) &&
+      (ReqBlockDim.Z >= 1 && ReqBlockDim.Z <= 64) &&
+      (ReqBlockDim.X * ReqBlockDim.Y * ReqBlockDim.Z <= 1024);
+
+  const auto ProcessIntrinsic =
+      [&](IntrinsicInst *II, SmallVector<IntrinsicInst *, 8> &ToErase) -> bool {
     switch (II->getIntrinsicID()) {
     // Index within block
     case Intrinsic::nvvm_read_ptx_sreg_tid_x:
-      return addRangeAttr(0, MaxBlockSize.X, II);
+      return addRangeAttr(0, HasValidReqNTID ? ReqBlockDim.X : MaxBlockSize.X,
+                          II);
     case Intrinsic::nvvm_read_ptx_sreg_tid_y:
-      return addRangeAttr(0, MaxBlockSize.Y, II);
+      return addRangeAttr(0, HasValidReqNTID ? ReqBlockDim.Y : MaxBlockSize.Y,
+                          II);
     case Intrinsic::nvvm_read_ptx_sreg_tid_z:
-      return addRangeAttr(0, MaxBlockSize.Z, II);
+      return addRangeAttr(0, HasValidReqNTID ? ReqBlockDim.Z : MaxBlockSize.Z,
+                          II);
 
-    // Block size
+    // Block size: replace with constants when reqntid is specified.
     case Intrinsic::nvvm_read_ptx_sreg_ntid_x:
-      return addRangeAttr(1, MaxBlockSize.X + 1, II);
+      return HasValidReqNTID ? replaceWithConstant(ReqBlockDim.X, II, ToErase)
+                             : addRangeAttr(1, MaxBlockSize.X + 1, II);
     case Intrinsic::nvvm_read_ptx_sreg_ntid_y:
-      return addRangeAttr(1, MaxBlockSize.Y + 1, II);
+      return HasValidReqNTID ? replaceWithConstant(ReqBlockDim.Y, II, ToErase)
+                             : addRangeAttr(1, MaxBlockSize.Y + 1, II);
     case Intrinsic::nvvm_read_ptx_sreg_ntid_z:
-      return addRangeAttr(1, MaxBlockSize.Z + 1, II);
+      return HasValidReqNTID ? replaceWithConstant(ReqBlockDim.Z, II, ToErase)
+                             : addRangeAttr(1, MaxBlockSize.Z + 1, II);
 
     // Cluster size
     case Intrinsic::nvvm_read_ptx_sreg_cluster_ctaid_x:
@@ -138,10 +168,12 @@ static bool runNVVMIntrRange(Function &F) {
 
   // Go through the calls in this function.
   bool Changed = false;
+  SmallVector<IntrinsicInst *, 8> ToErase;
   for (Instruction &I : instructions(F))
     if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&I))
-      Changed |= ProccessIntrinsic(II);
-
+      Changed |= ProcessIntrinsic(II, ToErase);
+  for (auto *II : ToErase)
+    II->eraseFromParent();
   return Changed;
 }
 

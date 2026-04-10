@@ -201,7 +201,7 @@ static SmallVector<unsigned, 3> getFnAttrParsedVector(const Function &F,
   return V;
 }
 
-static std::optional<uint64_t> getVectorProduct(ArrayRef<unsigned> V) {
+std::optional<uint64_t> getVectorProduct(ArrayRef<unsigned> V) {
   if (V.empty())
     return std::nullopt;
 
