@@ -58,7 +58,8 @@ static bool addRangeAttr(uint64_t Low, uint64_t High, IntrinsicInst *II) {
 }
 
 // Replace all uses of the intrinsic call with a constant value.
-static bool replaceWithConstant(uint64_t Val, IntrinsicInst *II, SmallVector<IntrinsicInst *, 8> &ToErase) {
+static bool replaceWithConstant(uint64_t Val, IntrinsicInst *II,
+                                SmallVector<IntrinsicInst *, 8> &ToErase) {
   Constant *C = ConstantInt::get(II->getType(), Val);
   II->replaceAllUsesWith(C);
   ToErase.push_back(II);
