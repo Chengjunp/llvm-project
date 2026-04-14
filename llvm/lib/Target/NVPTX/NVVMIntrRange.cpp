@@ -71,7 +71,7 @@ static bool runNVVMIntrRange(Function &F) {
   const auto OverallClusterRank = getOverallClusterRank(F);
 
   // If this function lacks any range information, do nothing.
-  if (!(ReqNTID.size() || OverallMaxNTID || OverallClusterRank))
+  if (!(!ReqNTID.empty() || OverallMaxNTID || OverallClusterRank))
     return false;
 
   const unsigned MaxNTID =
@@ -80,31 +80,25 @@ static bool runNVVMIntrRange(Function &F) {
   const unsigned FunctionClusterRank =
       OverallClusterRank.value_or(std::numeric_limits<unsigned>::max());
 
-  const Vector3 MaxBlockSize{std::min(1024u, MaxNTID), std::min(1024u, MaxNTID),
-                             std::min(64u, MaxNTID)};
+  // When reqntid is specified, block dimensions are exact compile-time
+  // constants. Otherwise, use maxntid (capped at hardware limits) as upper
+  // bounds.
+  Vector3 MinBlockDim, MaxBlockDim;
+  if (!ReqNTID.empty()) {
+    MinBlockDim = MaxBlockDim = {ReqNTID[0],
+                                 ReqNTID.size() > 1 ? ReqNTID[1] : 1,
+                                 ReqNTID.size() > 2 ? ReqNTID[2] : 1};
+  } else {
+    MinBlockDim = {1, 1, 1};
+    MaxBlockDim = {std::min(1024u, MaxNTID), std::min(1024u, MaxNTID),
+                   std::min(64u, MaxNTID)};
+  }
 
   // We conservatively use the maximum grid size as an upper bound for the
   // cluster rank.
   const Vector3 MaxClusterRank{std::min(0x7fffffffu, FunctionClusterRank),
                                std::min(0xffffu, FunctionClusterRank),
                                std::min(0xffffu, FunctionClusterRank)};
-
-  // When reqntid is specified, ntid (blockDim) values are exact compile-time
-  // constants. Get per-dimension values for constant folding.
-  const Vector3 ReqBlockDim =
-      !ReqNTID.empty()
-          ? Vector3{ReqNTID[0], ReqNTID.size() > 1 ? ReqNTID[1] : 1,
-                    ReqNTID.size() > 2 ? ReqNTID[2] : 1}
-          : Vector3{};
-  // Only fold when reqntid values are within hardware limits.
-  const bool HasValidReqNTID =
-      (ReqBlockDim.X >= 1 && ReqBlockDim.X <= 1024) &&
-      (ReqBlockDim.Y >= 1 && ReqBlockDim.Y <= 1024) &&
-      (ReqBlockDim.Z >= 1 && ReqBlockDim.Z <= 64) &&
-      (ReqBlockDim.X * ReqBlockDim.Y * ReqBlockDim.Z <= 1024);
-  Vector3 MinBlockDim = {1, 1, 1}, MaxBlockDim = MaxBlockSize;
-  if (HasValidReqNTID)
-    MinBlockDim = MaxBlockDim = ReqBlockDim;
 
   const auto ProcessIntrinsic = [&](IntrinsicInst *II) -> bool {
     switch (II->getIntrinsicID()) {
@@ -158,6 +152,7 @@ static bool runNVVMIntrRange(Function &F) {
   for (Instruction &I : instructions(F))
     if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&I))
       Changed |= ProcessIntrinsic(II);
+
   return Changed;
 }
 

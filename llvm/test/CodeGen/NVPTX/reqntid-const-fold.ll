@@ -65,12 +65,14 @@ define ptx_kernel i32 @test_reqntid_1d() "nvvm.reqntid"="128" {
   ret i32 %e
 }
 
-; When .reqntid exceeds hardware limits, no folding — fall back to range attrs.
+; When .reqntid exceeds hardware limits, garbage-in/garbage-out: the range
+; intersection with intrinsic builtin ranges may produce empty or unexpected
+; ranges.
 define ptx_kernel i32 @test_reqntid_invalid() "nvvm.reqntid"="2048" {
 ; CHECK-LABEL: define ptx_kernel i32 @test_reqntid_invalid(
 ; CHECK-SAME: ) #[[ATTR2:[0-9]+]] {
 ; CHECK-NEXT:    [[TID_X:%.*]] = call range(i32 0, 1024) i32 @llvm.nvvm.read.ptx.sreg.tid.x()
-; CHECK-NEXT:    [[NTID_X:%.*]] = call range(i32 1, 1025) i32 @llvm.nvvm.read.ptx.sreg.ntid.x()
+; CHECK-NEXT:    [[NTID_X:%.*]] = call range(i32 0, 0) i32 @llvm.nvvm.read.ptx.sreg.ntid.x()
 ; CHECK-NEXT:    [[A:%.*]] = add i32 [[TID_X]], [[NTID_X]]
 ; CHECK-NEXT:    ret i32 [[A]]
 ;
