@@ -66,7 +66,7 @@ static bool runNVVMIntrRange(Function &F) {
   if (!isKernelFunction(F))
     return false;
 
-  const auto ReqNTID = getReqNTID(F);
+  auto ReqNTID = getReqNTID(F);
   const auto OverallMaxNTID = getOverallMaxNTID(F);
   const auto OverallClusterRank = getOverallClusterRank(F);
 
@@ -85,9 +85,8 @@ static bool runNVVMIntrRange(Function &F) {
   // bounds.
   Vector3 MinBlockDim, MaxBlockDim;
   if (!ReqNTID.empty()) {
-    MinBlockDim =
-        MaxBlockDim = {ReqNTID[0], ReqNTID.size() > 1 ? ReqNTID[1] : 1,
-                       ReqNTID.size() > 2 ? ReqNTID[2] : 1};
+    ReqNTID.resize(3, 1);
+    MinBlockDim = MaxBlockDim = {ReqNTID[0], ReqNTID[1], ReqNTID[2]};
   } else {
     MinBlockDim = {1, 1, 1};
     MaxBlockDim = {std::min(1024u, MaxNTID), std::min(1024u, MaxNTID),
