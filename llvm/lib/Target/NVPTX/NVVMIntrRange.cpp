@@ -80,8 +80,7 @@ static bool runNVVMIntrRange(Function &F) {
   const unsigned FunctionClusterRank =
       OverallClusterRank.value_or(std::numeric_limits<unsigned>::max());
 
-  const Vector3 MaxBlockSize{std::min(1024u, MaxNTID),
-                             std::min(1024u, MaxNTID),
+  const Vector3 MaxBlockSize{std::min(1024u, MaxNTID), std::min(1024u, MaxNTID),
                              std::min(64u, MaxNTID)};
 
   // We conservatively use the maximum grid size as an upper bound for the
