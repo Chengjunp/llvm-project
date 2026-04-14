@@ -85,9 +85,9 @@ static bool runNVVMIntrRange(Function &F) {
   // bounds.
   Vector3 MinBlockDim, MaxBlockDim;
   if (!ReqNTID.empty()) {
-    MinBlockDim = MaxBlockDim = {ReqNTID[0],
-                                 ReqNTID.size() > 1 ? ReqNTID[1] : 1,
-                                 ReqNTID.size() > 2 ? ReqNTID[2] : 1};
+    MinBlockDim =
+        MaxBlockDim = {ReqNTID[0], ReqNTID.size() > 1 ? ReqNTID[1] : 1,
+                       ReqNTID.size() > 2 ? ReqNTID[2] : 1};
   } else {
     MinBlockDim = {1, 1, 1};
     MaxBlockDim = {std::min(1024u, MaxNTID), std::min(1024u, MaxNTID),
