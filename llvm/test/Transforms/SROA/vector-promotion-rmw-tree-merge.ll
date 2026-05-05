@@ -12,10 +12,11 @@ target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f3
 ;   - a single full-width load at the end.
 ;
 ; The rewrite should:
-;   - replace each partial load with an extractvector from the current
-;     per-slice value,
-;   - thread each slice's SSA value through the rounds via the user's
-;     compute (no selects/blends),
+;   - initialize each slice's SSA value from the init store via a
+;     shufflevector picking out that slice's elements,
+;   - replace each partial load with the current per-slice SSA value
+;     (RAUW), threading it through the rounds via the user's compute
+;     (no selects/blends),
 ;   - tree-merge the final per-slice values into the final alloca value.
 ;
 
@@ -24,10 +25,10 @@ define <4 x float> @single_round(<4 x float> %init, <2 x float> %a, <2 x float> 
 ; CHECK-LABEL: define <4 x float> @single_round(
 ; CHECK-SAME: <4 x float> [[INIT:%.*]], <2 x float> [[A:%.*]], <2 x float> [[B:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY:.*:]]
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 2, i32 3>
-; CHECK-NEXT:    [[R0:%.*]] = fadd <2 x float> [[INIT_EXTRACT_EXTRACT]], [[A]]
-; CHECK-NEXT:    [[R1:%.*]] = fadd <2 x float> [[INIT_EXTRACT_EXTRACT1]], [[B]]
+; CHECK-NEXT:    [[INIT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
+; CHECK-NEXT:    [[INIT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 2, i32 3>
+; CHECK-NEXT:    [[R0:%.*]] = fadd <2 x float> [[INIT_EXTRACT]], [[A]]
+; CHECK-NEXT:    [[R1:%.*]] = fadd <2 x float> [[INIT_EXTRACT1]], [[B]]
 ; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <2 x float> [[R0]], <2 x float> [[R1]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
 ; CHECK-NEXT:    ret <4 x float> [[TMP0]]
 ;
@@ -56,10 +57,10 @@ define <4 x float> @multi_round(<4 x float> %init,
 ; CHECK-LABEL: define <4 x float> @multi_round(
 ; CHECK-SAME: <4 x float> [[INIT:%.*]], <2 x float> [[A1:%.*]], <2 x float> [[B1:%.*]], <2 x float> [[A2:%.*]], <2 x float> [[B2:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY:.*:]]
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 2, i32 3>
-; CHECK-NEXT:    [[R0_1:%.*]] = fadd <2 x float> [[INIT_EXTRACT_EXTRACT]], [[A1]]
-; CHECK-NEXT:    [[R1_1:%.*]] = fadd <2 x float> [[INIT_EXTRACT_EXTRACT1]], [[B1]]
+; CHECK-NEXT:    [[INIT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
+; CHECK-NEXT:    [[INIT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 2, i32 3>
+; CHECK-NEXT:    [[R0_1:%.*]] = fadd <2 x float> [[INIT_EXTRACT]], [[A1]]
+; CHECK-NEXT:    [[R1_1:%.*]] = fadd <2 x float> [[INIT_EXTRACT1]], [[B1]]
 ; CHECK-NEXT:    [[R0_2:%.*]] = fadd <2 x float> [[R0_1]], [[A2]]
 ; CHECK-NEXT:    [[R1_2:%.*]] = fadd <2 x float> [[R1_1]], [[B2]]
 ; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <2 x float> [[R0_2]], <2 x float> [[R1_2]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
@@ -100,14 +101,13 @@ define <4 x float> @uneven_slices(<4 x float> %init, <3 x float> %a, <1 x float>
 ; CHECK-LABEL: define <4 x float> @uneven_slices(
 ; CHECK-SAME: <4 x float> [[INIT:%.*]], <3 x float> [[A:%.*]], <1 x float> [[B:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY:.*:]]
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <3 x i32> <i32 0, i32 1, i32 2>
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT1:%.*]] = extractelement <4 x float> [[INIT]], i32 3
-; CHECK-NEXT:    [[TMP0:%.*]] = bitcast float [[INIT_EXTRACT_EXTRACT1]] to <1 x float>
-; CHECK-NEXT:    [[R0:%.*]] = fadd <3 x float> [[INIT_EXTRACT_EXTRACT]], [[A]]
-; CHECK-NEXT:    [[R1:%.*]] = fadd <1 x float> [[TMP0]], [[B]]
-; CHECK-NEXT:    [[TMP1:%.*]] = shufflevector <1 x float> [[R1]], <1 x float> poison, <3 x i32> <i32 0, i32 poison, i32 poison>
-; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <3 x float> [[R0]], <3 x float> [[TMP1]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
-; CHECK-NEXT:    ret <4 x float> [[TMP2]]
+; CHECK-NEXT:    [[INIT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <3 x i32> <i32 0, i32 1, i32 2>
+; CHECK-NEXT:    [[INIT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <1 x i32> <i32 3>
+; CHECK-NEXT:    [[R0:%.*]] = fadd <3 x float> [[INIT_EXTRACT]], [[A]]
+; CHECK-NEXT:    [[R1:%.*]] = fadd <1 x float> [[INIT_EXTRACT1]], [[B]]
+; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <1 x float> [[R1]], <1 x float> poison, <3 x i32> <i32 0, i32 poison, i32 poison>
+; CHECK-NEXT:    [[TMP1:%.*]] = shufflevector <3 x float> [[R0]], <3 x float> [[TMP0]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+; CHECK-NEXT:    ret <4 x float> [[TMP1]]
 ;
 entry:
   %alloca = alloca [4 x float], align 16
@@ -136,9 +136,9 @@ define <4 x float> @slice_swap(<4 x float> %init) {
 ; CHECK-LABEL: define <4 x float> @slice_swap(
 ; CHECK-SAME: <4 x float> [[INIT:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY:.*:]]
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 2, i32 3>
-; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <2 x float> [[INIT_EXTRACT_EXTRACT1]], <2 x float> [[INIT_EXTRACT_EXTRACT]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+; CHECK-NEXT:    [[INIT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
+; CHECK-NEXT:    [[INIT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 2, i32 3>
+; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <2 x float> [[INIT_EXTRACT1]], <2 x float> [[INIT_EXTRACT]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
 ; CHECK-NEXT:    ret <4 x float> [[TMP0]]
 ;
 entry:
@@ -160,24 +160,22 @@ entry:
 }
 
 ; Load-only single-element slice. The init seed for a 1-element range is
-; produced by extractelement (a scalar), and a slice with no partial store
-; never updates that entry.
+; a 1-element shufflevector, and a slice with no partial store never
+; updates that entry.
 define <4 x float> @load_only_single_element_slice(<4 x float> %init, <2 x float> %a, <1 x float> %b) {
 ; CHECK-LABEL: define <4 x float> @load_only_single_element_slice(
 ; CHECK-SAME: <4 x float> [[INIT:%.*]], <2 x float> [[A:%.*]], <1 x float> [[B:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY:.*:]]
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT1:%.*]] = extractelement <4 x float> [[INIT]], i32 2
-; CHECK-NEXT:    [[INIT_EXTRACT_VEC:%.*]] = bitcast float [[INIT_EXTRACT_EXTRACT1]] to <1 x float>
-; CHECK-NEXT:    [[INIT_EXTRACT_EXTRACT2:%.*]] = extractelement <4 x float> [[INIT]], i32 3
-; CHECK-NEXT:    [[INIT_EXTRACT_VEC3:%.*]] = bitcast float [[INIT_EXTRACT_EXTRACT2]] to <1 x float>
-; CHECK-NEXT:    [[R0:%.*]] = fadd <2 x float> [[INIT_EXTRACT_EXTRACT]], [[A]]
-; CHECK-NEXT:    [[R1:%.*]] = fadd <1 x float> [[INIT_EXTRACT_VEC]], [[B]]
+; CHECK-NEXT:    [[INIT_EXTRACT:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <2 x i32> <i32 0, i32 1>
+; CHECK-NEXT:    [[INIT_EXTRACT1:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <1 x i32> <i32 2>
+; CHECK-NEXT:    [[INIT_EXTRACT2:%.*]] = shufflevector <4 x float> [[INIT]], <4 x float> poison, <1 x i32> <i32 3>
+; CHECK-NEXT:    [[R0:%.*]] = fadd <2 x float> [[INIT_EXTRACT]], [[A]]
+; CHECK-NEXT:    [[R1:%.*]] = fadd <1 x float> [[INIT_EXTRACT1]], [[B]]
 ; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <1 x float> [[R1]], <1 x float> poison, <2 x i32> <i32 0, i32 poison>
 ; CHECK-NEXT:    [[TMP1:%.*]] = shufflevector <2 x float> [[R0]], <2 x float> [[TMP0]], <3 x i32> <i32 0, i32 1, i32 2>
-; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <1 x float> [[INIT_EXTRACT_VEC3]], <1 x float> poison, <3 x i32> <i32 0, i32 poison, i32 poison>
+; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <1 x float> [[INIT_EXTRACT2]], <1 x float> poison, <3 x i32> <i32 0, i32 poison, i32 poison>
 ; CHECK-NEXT:    [[TMP3:%.*]] = shufflevector <3 x float> [[TMP1]], <3 x float> [[TMP2]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
-; CHECK-NEXT:    [[V2_FROM_INIT:%.*]] = bitcast <1 x float> [[INIT_EXTRACT_VEC3]] to float
+; CHECK-NEXT:    [[V2_FROM_INIT:%.*]] = bitcast <1 x float> [[INIT_EXTRACT2]] to float
 ; CHECK-NEXT:    [[FINAL:%.*]] = insertelement <4 x float> [[TMP3]], float [[V2_FROM_INIT]], i32 0
 ; CHECK-NEXT:    ret <4 x float> [[FINAL]]
 ;
@@ -207,4 +205,87 @@ entry:
   %v2_from_init = bitcast <1 x float> %v2 to float
   %final = insertelement <4 x float> %result, float %v2_from_init, i32 0
   ret <4 x float> %final
+}
+
+; Larger merge tree: 8 disjoint <2 x float> slices in a <16 x float> alloca.
+; The tree-merge has 8 leaves, so the final shufflevector tree has height 3.
+define <16 x float> @larger_merge_tree(<16 x float> %init,
+; CHECK-LABEL: define <16 x float> @larger_merge_tree(
+; CHECK-SAME: <16 x float> [[INIT:%.*]], <2 x float> [[A0:%.*]], <2 x float> [[A1:%.*]], <2 x float> [[A2:%.*]], <2 x float> [[A3:%.*]], <2 x float> [[A4:%.*]], <2 x float> [[A5:%.*]], <2 x float> [[A6:%.*]], <2 x float> [[A7:%.*]]) {
+; CHECK-NEXT:  [[ENTRY:.*:]]
+; CHECK-NEXT:    [[INIT_EXTRACT:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 0, i32 1>
+; CHECK-NEXT:    [[INIT_EXTRACT1:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 2, i32 3>
+; CHECK-NEXT:    [[INIT_EXTRACT2:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 4, i32 5>
+; CHECK-NEXT:    [[INIT_EXTRACT3:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 6, i32 7>
+; CHECK-NEXT:    [[INIT_EXTRACT4:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 8, i32 9>
+; CHECK-NEXT:    [[INIT_EXTRACT5:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 10, i32 11>
+; CHECK-NEXT:    [[INIT_EXTRACT6:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 12, i32 13>
+; CHECK-NEXT:    [[INIT_EXTRACT7:%.*]] = shufflevector <16 x float> [[INIT]], <16 x float> poison, <2 x i32> <i32 14, i32 15>
+; CHECK-NEXT:    [[R0:%.*]] = fadd <2 x float> [[INIT_EXTRACT]], [[A0]]
+; CHECK-NEXT:    [[R1:%.*]] = fadd <2 x float> [[INIT_EXTRACT1]], [[A1]]
+; CHECK-NEXT:    [[R2:%.*]] = fadd <2 x float> [[INIT_EXTRACT2]], [[A2]]
+; CHECK-NEXT:    [[R3:%.*]] = fadd <2 x float> [[INIT_EXTRACT3]], [[A3]]
+; CHECK-NEXT:    [[R4:%.*]] = fadd <2 x float> [[INIT_EXTRACT4]], [[A4]]
+; CHECK-NEXT:    [[R5:%.*]] = fadd <2 x float> [[INIT_EXTRACT5]], [[A5]]
+; CHECK-NEXT:    [[R6:%.*]] = fadd <2 x float> [[INIT_EXTRACT6]], [[A6]]
+; CHECK-NEXT:    [[R7:%.*]] = fadd <2 x float> [[INIT_EXTRACT7]], [[A7]]
+; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <2 x float> [[R0]], <2 x float> [[R1]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+; CHECK-NEXT:    [[TMP1:%.*]] = shufflevector <2 x float> [[R2]], <2 x float> [[R3]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <2 x float> [[R4]], <2 x float> [[R5]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+; CHECK-NEXT:    [[TMP3:%.*]] = shufflevector <2 x float> [[R6]], <2 x float> [[R7]], <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+; CHECK-NEXT:    [[TMP4:%.*]] = shufflevector <4 x float> [[TMP0]], <4 x float> [[TMP1]], <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>
+; CHECK-NEXT:    [[TMP5:%.*]] = shufflevector <4 x float> [[TMP2]], <4 x float> [[TMP3]], <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>
+; CHECK-NEXT:    [[TMP6:%.*]] = shufflevector <8 x float> [[TMP4]], <8 x float> [[TMP5]], <16 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7, i32 8, i32 9, i32 10, i32 11, i32 12, i32 13, i32 14, i32 15>
+; CHECK-NEXT:    ret <16 x float> [[TMP6]]
+;
+  <2 x float> %a0, <2 x float> %a1,
+  <2 x float> %a2, <2 x float> %a3,
+  <2 x float> %a4, <2 x float> %a5,
+  <2 x float> %a6, <2 x float> %a7) {
+entry:
+  %alloca = alloca [16 x float], align 64
+  store <16 x float> %init, ptr %alloca, align 64
+
+  %p0 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 0
+  %v0 = load  <2 x float>, ptr %p0, align 8
+  %r0 = fadd  <2 x float> %v0, %a0
+  store <2 x float> %r0, ptr %p0, align 8
+
+  %p1 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 2
+  %v1 = load  <2 x float>, ptr %p1, align 8
+  %r1 = fadd  <2 x float> %v1, %a1
+  store <2 x float> %r1, ptr %p1, align 8
+
+  %p2 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 4
+  %v2 = load  <2 x float>, ptr %p2, align 8
+  %r2 = fadd  <2 x float> %v2, %a2
+  store <2 x float> %r2, ptr %p2, align 8
+
+  %p3 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 6
+  %v3 = load  <2 x float>, ptr %p3, align 8
+  %r3 = fadd  <2 x float> %v3, %a3
+  store <2 x float> %r3, ptr %p3, align 8
+
+  %p4 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 8
+  %v4 = load  <2 x float>, ptr %p4, align 8
+  %r4 = fadd  <2 x float> %v4, %a4
+  store <2 x float> %r4, ptr %p4, align 8
+
+  %p5 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 10
+  %v5 = load  <2 x float>, ptr %p5, align 8
+  %r5 = fadd  <2 x float> %v5, %a5
+  store <2 x float> %r5, ptr %p5, align 8
+
+  %p6 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 12
+  %v6 = load  <2 x float>, ptr %p6, align 8
+  %r6 = fadd  <2 x float> %v6, %a6
+  store <2 x float> %r6, ptr %p6, align 8
+
+  %p7 = getelementptr inbounds [16 x float], ptr %alloca, i32 0, i32 14
+  %v7 = load  <2 x float>, ptr %p7, align 8
+  %r7 = fadd  <2 x float> %v7, %a7
+  store <2 x float> %r7, ptr %p7, align 8
+
+  %result = load <16 x float>, ptr %alloca, align 64
+  ret <16 x float> %result
 }

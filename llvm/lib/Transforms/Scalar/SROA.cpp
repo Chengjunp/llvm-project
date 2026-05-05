@@ -2861,9 +2861,9 @@ public:
   /// otherwise emit for each partial store.
   ///
   /// Pattern 1 (stores-only):
-  ///   Multiple non-overlapping partial stores completely fill the alloca and
-  ///   there is exactly one full-width load. The stores are tree-merged into
-  ///   a single vector and stored once.
+  ///   Multiple non-overlapping partial stores completely fill the alloca
+  ///   and there is exactly one full-width load coming after the stores.
+  ///   The stores are tree-merged into a single vector and stored once.
   ///
   /// Example transformation:
   /// Before: (stores do not have to be in order)
@@ -2880,13 +2880,15 @@ public:
   ///   A single full-width init store, followed by partial loads and
   ///   partial stores that read-modify-write the alloca one or more
   ///   times, optionally followed by a full-width load. The only
-  ///   structural requirement is that the distinct (begin, end) ranges
+  ///   structural requirement is that the distinct [begin, end) ranges
   ///   touched by the partial loads and stores, taken together, tile
   ///   the alloca disjointly.
   ///
   ///   We keep a map from each slice range to the SSA value that
   ///   currently lives there, `SliceValues[r] -> Value*`:
-  ///     - initialize each entry from the init store via extractvector,
+  ///     - initialize each entry to the corresponding piece of the
+  ///       init store's value (via a shufflevector picking the
+  ///       range's elements out of the init value),
   ///     - walk partial loads and stores in block order,
   ///     - for a partial load at range r: RAUW with `SliceValues[r]`,
   ///     - for a partial store at range r: update `SliceValues[r]` to
@@ -2898,10 +2900,10 @@ public:
   ///   Because the ranges are disjoint by construction, a store at one
   ///   range cannot affect another range's tracked value, so a single
   ///   block-order walk correctly tracks the memory state at each
-  ///   range. The algorithm handles multi-round RMW, loads/stores
-  ///   interleaved in any order, read-only slices (entry stays at the
-  ///   init extract) and write-only slices (entry never flows into a
-  ///   load).
+  ///   range. The algorithm handles multi-round RMW, partial loads
+  ///   and stores interleaved in any order, read-only slices (the
+  ///   tracked value stays at the init extract), and write-only
+  ///   slices (the tracked value never flows into a load).
   ///
   /// \param P The partition to analyze and potentially rewrite
   /// \return An optional vector of values that were deleted during the
@@ -3100,10 +3102,11 @@ public:
       LLVM_DEBUG({
         dbgs() << "Tree structured merge rewrite (stores-only):\n";
         dbgs() << "  Load: " << *FullLoad << "\n Ordered stores:\n";
-        for (auto [i, Info] : enumerate(StoreInfos))
+        for (auto [i, Info] : enumerate(StoreInfos)) {
           dbgs() << "    [" << i << "] Range[" << Info.BeginOffset << ", "
                  << Info.EndOffset << ") \tStore: " << *Info.Store
                  << "\tValue: " << *Info.StoredValue << "\n";
+        }
       });
 
       // StoreInfos is sorted by offset, not by block order. Anchoring to
@@ -3140,9 +3143,10 @@ public:
     // with comesBefore and build SSA without PHIs.
     if (InitStore->getParent() != StoreBB)
       return std::nullopt;
-    for (auto &Info : LoadInfos)
-      if (Info.Load->getParent() != StoreBB)
-        return std::nullopt;
+    if (any_of(LoadInfos, [&](const LoadInfo &I) {
+          return I.Load->getParent() != StoreBB;
+        }))
+      return std::nullopt;
     // FullLoad (if any) is allowed to live in a different basic block. See
     // the note on the stores-only path: we don't do store->load forwarding
     // directly — the merged vector is stored to NewAI and the new load
@@ -3157,34 +3161,38 @@ public:
       uint64_t BeginOffset;
       uint64_t EndOffset;
       bool IsStore;
+      Access(const LoadInfo &L)
+          : Inst(L.Load), BeginOffset(L.BeginOffset), EndOffset(L.EndOffset),
+            IsStore(false) {}
+      Access(const StoreInfo &S)
+          : Inst(S.Store), BeginOffset(S.BeginOffset), EndOffset(S.EndOffset),
+            IsStore(true) {}
     };
     SmallVector<Access, 16> Accesses;
     Accesses.reserve(LoadInfos.size() + StoreInfos.size());
-    for (auto &Info : LoadInfos)
-      Accesses.push_back({Info.Load, Info.BeginOffset, Info.EndOffset,
-                          /*IsStore=*/false});
-    for (auto &Info : StoreInfos)
-      Accesses.push_back({Info.Store, Info.BeginOffset, Info.EndOffset,
-                          /*IsStore=*/true});
+    Accesses.append(LoadInfos.begin(), LoadInfos.end());
+    Accesses.append(StoreInfos.begin(), StoreInfos.end());
     llvm::sort(Accesses, [](const Access &A, const Access &B) {
       return A.Inst->comesBefore(B.Inst);
     });
 
     // Ordering constraint 1: InitStore must come before every partial
     // access — they read/write the RMW state initialised by InitStore.
-    for (auto &Acc : Accesses)
-      if (!InitStore->comesBefore(Acc.Inst))
-        return std::nullopt;
+    // Accesses is sorted by block order, so the first element is the
+    // earliest; checking it is enough.
+    if (!InitStore->comesBefore(Accesses.front().Inst))
+      return std::nullopt;
     // Ordering constraint 2: when FullLoad shares the block with the
     // partial accesses, it must come after every one of them — otherwise
-    // it could read a stale value. If FullLoad is in a different block
-    // the later promotion pass resolves the cross-BB ordering.
-    if (FullLoad && FullLoad->getParent() == StoreBB)
-      for (auto &Acc : Accesses)
-        if (!Acc.Inst->comesBefore(FullLoad))
-          return std::nullopt;
+    // it could read a stale value. Accesses is sorted, so the last
+    // element is the latest; checking it is enough. If FullLoad is in a
+    // different block the later promotion pass resolves the cross-BB
+    // ordering.
+    if (FullLoad && FullLoad->getParent() == StoreBB &&
+        !Accesses.back().Inst->comesBefore(FullLoad))
+      return std::nullopt;
 
-    // Coverage check: the distinct (begin, end) ranges touched by the
+    // Coverage check: the distinct [begin, end) ranges touched by the
     // partial loads and stores must tile the alloca disjointly. That is
     // the only precondition the per-range SliceValues tracking below
     // needs — a disjoint tile guarantees the entries don't alias each
@@ -3233,17 +3241,15 @@ public:
       InitVec = IRB.CreateBitCast(InitVec, NewAllocaTy, "init.cast");
     DenseMap<SliceRange, Value *> SliceValues;
     for (auto &Range : Partition) {
-      Value *V = extractVector(IRB, InitVec, getIndex(Range.first),
-                               getIndex(Range.second), "init.extract");
-      // extractVector emits an extractelement (scalar) for 1-element
-      // ranges. The tree merge consumes vectors uniformly, so wrap any
-      // scalar into <1 x T> here. Stored values are guaranteed to be
-      // FixedVectorType by IsTypeValidForTreeStructuredMerge, so once
-      // every entry is a vector it stays a vector throughout the walk.
-      if (!isa<FixedVectorType>(V->getType()))
-        V = IRB.CreateBitCast(V, FixedVectorType::get(V->getType(), 1),
-                              "init.extract.vec");
-      SliceValues[Range] = V;
+      // Initialize SliceValues[Range] with the piece of InitVec that
+      // lives at this range — a shufflevector picking the
+      // [BeginIdx, EndIdx) elements out of InitVec. This is the value
+      // any subsequent partial load at this range reads, until a
+      // partial store at this range updates the entry below.
+      auto Mask = llvm::to_vector<8>(
+          llvm::seq<int>(getIndex(Range.first), getIndex(Range.second)));
+      SliceValues[Range] =
+          IRB.CreateShuffleVector(InitVec, Mask, "init.extract");
     }
     // The init store itself becomes dead — its value is consumed via the
     // extracts above.
@@ -3276,12 +3282,10 @@ public:
     // alloca's final vector value. Insertion point is just after the
     // block-order-last partial access — guaranteed to dominate every
     // SliceValues entry since each one is either an init extract or a
-    // stored value defined before its (now-deleted) store.
-    Instruction *FinalInsert = Accesses.back().Inst->getNextNode();
-    if (!FinalInsert)
-      return std::nullopt;
-
-    IRBuilder<> Builder(FinalInsert);
+    // stored value defined before its (now-deleted) store. The next
+    // node is guaranteed non-null because every basic block ends in a
+    // terminator and a load/store can never be the terminator.
+    IRBuilder<> Builder(Accesses.back().Inst->getNextNode());
     std::queue<Value *> Q;
     for (auto &Range : Partition)
       Q.push(SliceValues[Range]);
