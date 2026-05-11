@@ -69,17 +69,18 @@ static bool runNVVMIntrRange(Function &F) {
   auto ReqNTID = getReqNTID(F);
   const auto OverallMaxNTID = getOverallMaxNTID(F);
   auto ClusterDim = getClusterDim(F);
-  const auto OverallClusterRank = getOverallClusterRank(F);
+  const auto MaxClusterRank = getMaxClusterRank(F);
 
   // If this function lacks any range information, do nothing.
-  if (!(!ReqNTID.empty() || OverallMaxNTID || OverallClusterRank))
+  if (ReqNTID.empty() && !OverallMaxNTID && ClusterDim.empty() &&
+      !MaxClusterRank)
     return false;
 
   const unsigned MaxNTID =
       OverallMaxNTID.value_or(std::numeric_limits<unsigned>::max());
 
-  const unsigned FunctionClusterRank =
-      OverallClusterRank.value_or(std::numeric_limits<unsigned>::max());
+  const unsigned MaxNctaPerCluster =
+      MaxClusterRank.value_or(std::numeric_limits<unsigned>::max());
 
   // When reqntid is specified, block dimensions are exact compile-time
   // constants. Otherwise, use maxntid (capped at hardware limits) as upper
@@ -98,15 +99,20 @@ static bool runNVVMIntrRange(Function &F) {
   // constants. Otherwise, use maxclusterrank (capped at hardware limits) as
   // upper bounds.
   Vector3 MinClusterDim, MaxClusterDim;
+  uint64_t MinClusterSize, MaxClusterSize;
   if (!ClusterDim.empty()) {
     ClusterDim.resize(3, 1);
     MinClusterDim =
         MaxClusterDim = {ClusterDim[0], ClusterDim[1], ClusterDim[2]};
+    MinClusterSize = MaxClusterSize =
+        ClusterDim[0] * ClusterDim[1] * ClusterDim[2];
   } else {
     MinClusterDim = {1, 1, 1};
-    MaxClusterDim = {std::min(0x7fffffffu, FunctionClusterRank),
-                     std::min(0xffffu, FunctionClusterRank),
-                     std::min(0xffffu, FunctionClusterRank)};
+    MaxClusterDim = {std::min(0x7fffffffu, MaxNctaPerCluster),
+                     std::min(0xffffu, MaxNctaPerCluster),
+                     std::min(0xffffu, MaxNctaPerCluster)};
+    MinClusterSize = 1;
+    MaxClusterSize = MaxNctaPerCluster;
   }
 
   const auto ProcessIntrinsic = [&](IntrinsicInst *II) -> bool {
@@ -145,18 +151,12 @@ static bool runNVVMIntrRange(Function &F) {
       return addRangeAttr(MinClusterDim.Z, MaxClusterDim.Z + 1, II);
 
     case Intrinsic::nvvm_read_ptx_sreg_cluster_ctarank:
-      if (OverallClusterRank)
-        return addRangeAttr(0, FunctionClusterRank, II);
-      break;
+      return addRangeAttr(0, MaxClusterSize, II);
     case Intrinsic::nvvm_read_ptx_sreg_cluster_nctarank:
-      if (OverallClusterRank)
-        return addRangeAttr(!ClusterDim.empty() ? FunctionClusterRank : 1,
-                            FunctionClusterRank + 1, II);
-      break;
+      return addRangeAttr(MinClusterSize, MaxClusterSize + 1, II);
     default:
       return false;
     }
-    return false;
   };
 
   // Go through the calls in this function.
