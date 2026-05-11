@@ -95,6 +95,8 @@ static bool runNVVMIntrRange(Function &F) {
                    std::min(64u, MaxNTID)};
   }
 
+  const bool HasClusterInfo = !ClusterDim.empty() || MaxClusterRank;
+
   // When cluster_dim is specified, cluster dimensions are exact compile-time
   // constants. Otherwise, use maxclusterrank (capped at hardware limits) as
   // upper bounds.
@@ -151,9 +153,10 @@ static bool runNVVMIntrRange(Function &F) {
       return addRangeAttr(MinClusterDim.Z, MaxClusterDim.Z + 1, II);
 
     case Intrinsic::nvvm_read_ptx_sreg_cluster_ctarank:
-      return addRangeAttr(0, MaxClusterSize, II);
+      return HasClusterInfo && addRangeAttr(0, MaxClusterSize, II);
     case Intrinsic::nvvm_read_ptx_sreg_cluster_nctarank:
-      return addRangeAttr(MinClusterSize, MaxClusterSize + 1, II);
+      return HasClusterInfo &&
+             addRangeAttr(MinClusterSize, MaxClusterSize + 1, II);
     default:
       return false;
     }
